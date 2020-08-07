@@ -62,9 +62,9 @@ impl<T> CustomSet<T> {
         } else {
             unsafe {
                 let groups = Self::groups_from_cap(cap);
-                let (buf, ctrl) = Self::allocate_groups(groups);
+                let (slot, ctrl) = Self::allocate_groups(groups);
                 Self {
-                    slot: Unique::new_unchecked(buf),
+                    slot: Unique::new_unchecked(slot),
                     ctrl: Unique::new_unchecked(ctrl),
                     groups,
                     load: 0,
@@ -100,7 +100,7 @@ impl<T> CustomSet<T> {
         unsafe { Group(self.ctrl().offset(group * GROUP_SIZE as isize)) }
     }
 
-    /// Returns the the layout of the buf array and the ctrl array.
+    /// Returns the the layout of the slot array and the ctrl array.
     fn layout(groups: isize) -> (Layout, Layout) {
         (
             Layout::array::<T>(groups as usize * GROUP_SIZE).unwrap(),
@@ -111,11 +111,11 @@ impl<T> CustomSet<T> {
     /// Allocates enough memory to hold `groups` groups of elements
     /// and control bytes. Sets all control bytes to [Flag::Empty](ctrl::Flag::Empty).
     fn allocate_groups(groups: isize) -> (*mut T, *mut Ctrl) {
-        let (buf_layout, ctrl_layout) = Self::layout(groups);
+        let (slot_layout, ctrl_layout) = Self::layout(groups);
 
-        let buf = match Global.alloc(buf_layout, AllocInit::Uninitialized) {
+        let slot = match Global.alloc(slot_layout, AllocInit::Uninitialized) {
             Ok(block) => block.ptr.as_ptr(),
-            Err(_) => handle_alloc_error(buf_layout),
+            Err(_) => handle_alloc_error(slot_layout),
         };
         let ctrl = match Global.alloc(ctrl_layout, AllocInit::Zeroed) {
             Ok(block) => block.ptr.as_ptr(),
@@ -126,7 +126,7 @@ impl<T> CustomSet<T> {
             ptr::write_bytes(ctrl, Flag::Empty as u8, groups as usize * GROUP_SIZE);
         }
 
-        (buf as *mut _, ctrl)
+        (slot as *mut _, ctrl)
     }
 
     /// Returns the set's capacity for elements. Only used
@@ -281,14 +281,14 @@ where
         unsafe {
             if self.groups == 0 {
                 let groups = 1;
-                let (buf, ctrl) = Self::allocate_groups(groups);
-                self.slot = Unique::new_unchecked(buf);
+                let (slot, ctrl) = Self::allocate_groups(groups);
+                self.slot = Unique::new_unchecked(slot);
                 self.ctrl = Unique::new_unchecked(ctrl);
                 self.groups = groups;
             } else {
                 let old_groups = self.groups;
-                let (old_buf_layout, old_ctrl_layout) = Self::layout(old_groups);
-                let old_buf = self.slot();
+                let (old_slot_layout, old_ctrl_layout) = Self::layout(old_groups);
+                let old_slot = self.slot();
                 let old_ctrl = self.ctrl();
 
                 let new_groups = old_groups * 2;
@@ -298,9 +298,9 @@ where
                     "capacity overflow"
                 );
 
-                let (new_buf, new_ctrl) = Self::allocate_groups(new_groups);
+                let (new_slot, new_ctrl) = Self::allocate_groups(new_groups);
                 self.groups = new_groups;
-                self.slot = Unique::new_unchecked(new_buf);
+                self.slot = Unique::new_unchecked(new_slot);
                 self.ctrl = Unique::new_unchecked(new_ctrl);
 
                 let mut load = self.load;
@@ -319,9 +319,19 @@ where
                     }
                 }
 
-                Global.dealloc(NonNull::new_unchecked(old_buf).cast(), old_buf_layout);
+                Global.dealloc(NonNull::new_unchecked(old_slot).cast(), old_slot_layout);
                 Global.dealloc(NonNull::new_unchecked(old_ctrl).cast(), old_ctrl_layout);
             };
+        }
+    }
+}
+
+impl<T> Drop for CustomSet<T> {
+    fn drop(&mut self) {
+        let (slot_layout, ctrl_layout) = Self::layout(self.groups);
+        unsafe {
+            Global.dealloc(NonNull::new_unchecked(self.slot()).cast(), slot_layout);
+            Global.dealloc(NonNull::new_unchecked(self.ctrl()).cast(), ctrl_layout);
         }
     }
 }
@@ -366,7 +376,7 @@ struct CustomSetIter<'set, T> {
     load: usize,
     idx: Index,
     ctrl: *const Ctrl,
-    buf: *const T,
+    slot: *const T,
     ctrl_match: u32,
     _marker: PhantomData<&'set T>,
 }
@@ -378,7 +388,7 @@ impl<'set, T> CustomSetIter<'set, T> {
             load: set.load,
             idx: Index::default(),
             ctrl,
-            buf: set.slot(),
+            slot: set.slot(),
             ctrl_match: if set.groups == 0 {
                 0
             } else {
@@ -399,7 +409,7 @@ impl<'set, T> Iterator for CustomSetIter<'set, T> {
         unsafe {
             if is_zst::<T>() {
                 self.load = 0;
-                return Some(self.buf.as_ref().unwrap());
+                return Some(self.slot.as_ref().unwrap());
             }
             let idx = &mut self.idx;
             while self.ctrl_match & 1 == 0 {
@@ -414,7 +424,7 @@ impl<'set, T> Iterator for CustomSetIter<'set, T> {
             }
             self.load -= 1;
 
-            let el = (self.buf + *idx).as_ref().unwrap();
+            let el = (self.slot + *idx).as_ref().unwrap();
             idx.slot += 1;
             Some(el)
         }
