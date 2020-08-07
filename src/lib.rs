@@ -1,5 +1,7 @@
 #![feature(allocator_api, ptr_internals)]
 
+use ctrl::{Ctrl, Flag};
+use group::{Group, SIZE as GROUP_SIZE};
 use std::{
     alloc::{handle_alloc_error, AllocInit, AllocRef, Global, Layout},
     collections::hash_map::RandomState,
@@ -11,34 +13,41 @@ use std::{
     ptr::{self, NonNull, Unique},
 };
 
+mod ctrl;
+mod group;
+
 fn is_zst<T>() -> bool {
     mem::size_of::<T>() == 0
 }
 
-/// A simple hash set using linear probing.
-///
-/// Uses a default load factor of 0.5.
+fn h1(hash: u64) -> u64 {
+    hash >> 7
+}
+
+fn h2(hash: u64) -> Ctrl {
+    Ctrl::from(hash)
+}
+
+/// A very simple, probably incorrect implementation
+/// of Google's swiss map based on [this talk](https://youtu.be/ncHmEUmJZf4).
 pub struct CustomSet<T> {
-    buf: Unique<T>,
-    ctrl: Unique<bool>,
+    slot: Unique<T>,
+    ctrl: Unique<Ctrl>,
     load_factor: f64,
-    cap: usize,
     load: usize,
+    groups: isize,
     hash_builder: RandomState,
 }
 
 impl<T> CustomSet<T> {
     /// Returns an empty set. Doesn't allocate.
     fn empty() -> Self {
-        // if you're handling ZSTs, set the cap to usize::MAX,
-        // so the set never grows.
-        let cap = if mem::size_of::<T>() == 0 { !0 } else { 0 };
         Self {
-            buf: Unique::dangling(),
+            slot: Unique::dangling(),
             ctrl: Unique::dangling(),
-            cap,
             load: 0,
             load_factor: 0.5,
+            groups: 0,
             hash_builder: RandomState::new(),
         }
     }
@@ -47,15 +56,17 @@ impl<T> CustomSet<T> {
     ///
     /// Doesn't allocate if `cap == 0`.
     fn with_capacity(cap: usize) -> Self {
+        assert!(cap < isize::MAX as usize, "capacity overflow");
         if cap == 0 {
             Self::empty()
         } else {
             unsafe {
-                let (buf, ctrl) = Self::allocate(cap);
+                let groups = Self::groups_from_cap(cap);
+                let (buf, ctrl) = Self::allocate_groups(groups);
                 Self {
-                    buf: Unique::new_unchecked(buf),
+                    slot: Unique::new_unchecked(buf),
                     ctrl: Unique::new_unchecked(ctrl),
-                    cap,
+                    groups,
                     load: 0,
                     load_factor: 0.5,
                     hash_builder: RandomState::new(),
@@ -65,47 +76,42 @@ impl<T> CustomSet<T> {
     }
 
     /// Return the raw pointer to the ctrl array.
-    fn ctrl(&self) -> *mut bool {
+    fn ctrl(&self) -> *mut Ctrl {
         self.ctrl.as_ptr()
     }
 
-    /// Return the raw pointer to the buf array.
-    fn buf(&self) -> *mut T {
-        self.buf.as_ptr()
+    /// Return the raw pointer to the slot array.
+    fn slot(&self) -> *mut T {
+        self.slot.as_ptr()
     }
 
-    /// Returns an iterator that visits all elements in
-    /// the set in an arbitrary order.
-    fn iter(&self) -> CustomSetIter<'_, T> {
-        CustomSetIter::new(self)
+    /// Return a raw pointer to the slot at `idx`.
+    fn slot_at(&self, idx: Index) -> *mut T {
+        self.slot() + idx
     }
 
-    /// Returns the ctrl array as a slice.
-    fn _ctrl_slice(&self) -> &[bool] {
-        assert!(!is_zst::<T>());
-        unsafe { std::slice::from_raw_parts(self.ctrl(), self.cap) }
+    /// Return a raw pointer to the ctrl at `idx`.
+    fn ctrl_at(&self, idx: Index) -> *mut Ctrl {
+        self.ctrl() + idx
+    }
+
+    /// Return the `group`th group of ctrls.
+    fn ctrl_group(&self, group: isize) -> Group {
+        unsafe { Group(self.ctrl().offset(group * GROUP_SIZE as isize)) }
     }
 
     /// Returns the the layout of the buf array and the ctrl array.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let (buf_layout, ctrl_layout) = Self::layout(16);
-    /// ```
-    fn layout(cap: usize) -> (Layout, Layout) {
+    fn layout(groups: isize) -> (Layout, Layout) {
         (
-            Layout::array::<T>(cap).unwrap(),
-            Layout::array::<bool>(cap).unwrap(),
+            Layout::array::<T>(groups as usize * GROUP_SIZE).unwrap(),
+            Layout::array::<Ctrl>(groups as usize * GROUP_SIZE).unwrap(),
         )
     }
 
-    /// Allocates the buf array and the ctrl array with a given
-    /// capacity and returns pointers to them.
-    ///
-    /// Aborts if allocation fails.
-    fn allocate(cap: usize) -> (*mut T, *mut bool) {
-        let (buf_layout, ctrl_layout) = Self::layout(cap);
+    /// Allocates enough memory to hold `groups` groups of elements
+    /// and control bytes. Sets all control bytes to [Flag::Empty](ctrl::Flag::Empty).
+    fn allocate_groups(groups: isize) -> (*mut T, *mut Ctrl) {
+        let (buf_layout, ctrl_layout) = Self::layout(groups);
 
         let buf = match Global.alloc(buf_layout, AllocInit::Uninitialized) {
             Ok(block) => block.ptr.as_ptr(),
@@ -114,9 +120,30 @@ impl<T> CustomSet<T> {
         let ctrl = match Global.alloc(ctrl_layout, AllocInit::Zeroed) {
             Ok(block) => block.ptr.as_ptr(),
             Err(_) => handle_alloc_error(ctrl_layout),
-        };
+        } as *mut Ctrl;
 
-        (buf as *mut _, ctrl as *mut _)
+        unsafe {
+            ptr::write_bytes(ctrl, Flag::Empty as u8, groups as usize * GROUP_SIZE);
+        }
+
+        (buf as *mut _, ctrl)
+    }
+
+    /// Returns the set's capacity for elements. Only used
+    /// to calculate when to grow the buffer.
+    fn cap(&self) -> isize {
+        assert!(!is_zst::<T>());
+        self.groups * GROUP_SIZE as isize
+    }
+
+    /// Calculates the minimum number of groups need to hold
+    /// `cap` elements.
+    fn groups_from_cap(cap: usize) -> isize {
+        (cap / GROUP_SIZE) as isize + (cap % GROUP_SIZE != 0) as isize
+    }
+
+    fn iter(&self) -> CustomSetIter<'_, T> {
+        CustomSetIter::new(self)
     }
 }
 
@@ -157,7 +184,7 @@ where
 {
     /// Returns true, if the set contains `element`.
     pub fn contains(&self, element: &T) -> bool {
-        !self.is_empty() && self.probe_for(element).is_ok()
+        (is_zst::<T>() && self.load > 0) || (!self.is_empty() && self.find(element))
     }
 
     /// Adds an element to the set.
@@ -166,21 +193,25 @@ where
             self.load = 1;
             return;
         }
-        if self.cap == 0 {
-            self.grow();
+        if self.contains(&element) {
+            return;
         }
-        match self.probe_for(&element) {
-            Ok(_) => return,
-            Err(idx) => {
-                if (self.load + 1) as f64 > self.cap as f64 * self.load_factor {
-                    self.grow();
-                    return self.add(element);
+        if self.groups == 0 || self.load as f64 >= self.cap() as f64 * self.load_factor {
+            self.grow();
+            return self.add(element);
+        }
+        let (mut group, h2) = self.group_of(&element);
+        unsafe {
+            while group < self.groups {
+                let g = self.ctrl_group(group);
+                if let Some(slot) = g.matches(Ctrl::from(Flag::Empty)).next() {
+                    let idx = Index { group, slot };
+                    self.load += 1;
+                    ptr::write(self.ctrl_at(idx), h2);
+                    ptr::write(self.slot_at(idx), element);
+                    return;
                 }
-                unsafe {
-                    ptr::write(self.ctrl().offset(idx), true);
-                    ptr::write(self.buf().offset(idx), element);
-                }
-                self.load += 1;
+                group = (group + 1) % self.groups;
             }
         }
     }
@@ -195,32 +226,42 @@ where
         self.load == 0
     }
 
-    /// Returns true if `self.intersection(other).is_empty()`.
+    /// Returns true if `self` ∩ `other` == ∅.
     pub fn is_disjoint(&self, other: &Self) -> bool {
         self.iter().all(|el| !other.contains(el))
     }
 
-    /// Probes the table for the position of `element`. Returns
-    /// `Ok(idx)` if `element` is in the set at `idx` or `Err(idx)`
-    /// if `element` isn't in the set but can be inserted at `idx`.
-    fn probe_for(&self, element: &T) -> Result<isize, isize> {
-        assert!(self.cap > 0);
-        let mut idx = self.index(element);
-        unsafe {
-            while ptr::read(self.ctrl().offset(idx)) {
-                if self.buf().offset(idx).as_ref().unwrap() == element {
-                    return Ok(idx);
+    /// Probes the table for `element`, returning true if found.
+    fn find(&self, element: &T) -> bool {
+        let (mut group, h2) = self.group_of(element);
+        while group < self.groups {
+            unsafe {
+                let g = self.ctrl_group(group);
+                let h2_matches = g.matches(h2);
+                for h2_match in h2_matches {
+                    let h2_match = dbg!(h2_match);
+                    let idx = Index {
+                        group,
+                        slot: h2_match,
+                    };
+                    if self.slot_at(idx).as_ref().unwrap() == element {
+                        return true;
+                    }
                 }
-                idx = (idx + 1) % self.cap as isize;
+                if g.matches_mask(Flag::Empty.into()) > 0 {
+                    return false;
+                }
+                group = (group + 1) % self.groups as isize
             }
-            Err(idx)
         }
+        false
     }
 
-    /// Returns the index `element` would have in the set.
-    fn index(&self, element: &T) -> isize {
+    /// Returns the index of `elements`' group.
+    fn group_of(&self, element: &T) -> (isize, Ctrl) {
         let hash = self.hash(element);
-        (hash % self.cap as u64) as isize
+        let (h1, h2) = (h1(hash), h2(hash));
+        ((h1 % self.groups as u64) as isize, h2)
     }
 
     /// Returns the hash of `element`.
@@ -232,43 +273,48 @@ where
 
     /// Grows the arrays.
     ///
-    /// If the set hasn't been allocated before,
-    /// it allocates them with capacity 2, otherwise grows by a factor
-    /// of 2.
+    /// If the set hasn't been allocated before, it allocates
+    /// them with capacity for one group, otherwise increases
+    /// the number of groups by 2.
     fn grow(&mut self) {
         assert!(!is_zst::<T>());
         unsafe {
-            if self.cap == 0 {
-                let new_cap = 2;
-                let (buf, ctrl) = Self::allocate(new_cap);
-                self.buf = Unique::new_unchecked(buf);
+            if self.groups == 0 {
+                let groups = 1;
+                let (buf, ctrl) = Self::allocate_groups(groups);
+                self.slot = Unique::new_unchecked(buf);
                 self.ctrl = Unique::new_unchecked(ctrl);
-                self.cap = new_cap;
+                self.groups = groups;
             } else {
-                let old_cap = self.cap;
-                let (old_buf_layout, old_ctrl_layout) = Self::layout(old_cap);
-                let old_buf = self.buf();
+                let old_groups = self.groups;
+                let (old_buf_layout, old_ctrl_layout) = Self::layout(old_groups);
+                let old_buf = self.slot();
                 let old_ctrl = self.ctrl();
 
-                let new_cap = old_cap * 2;
-                let (new_buf, new_ctrl) = Self::allocate(new_cap);
-                self.cap = new_cap;
-                self.buf = Unique::new_unchecked(new_buf);
+                let new_groups = old_groups * 2;
+
+                assert!(
+                    new_groups * (GROUP_SIZE as isize) < isize::MAX,
+                    "capacity overflow"
+                );
+
+                let (new_buf, new_ctrl) = Self::allocate_groups(new_groups);
+                self.groups = new_groups;
+                self.slot = Unique::new_unchecked(new_buf);
                 self.ctrl = Unique::new_unchecked(new_ctrl);
 
                 let mut load = self.load;
-                for i in 0..old_cap as isize {
+                self.load = 0;
+
+                for group in 0..old_groups as isize {
                     if load == 0 {
                         break;
                     }
-                    if ptr::read(old_ctrl.offset(i)) {
-                        let idx = self
-                            .probe_for(old_buf.offset(i).as_ref().unwrap())
-                            .unwrap_err();
 
-                        ptr::write(new_ctrl.offset(idx), true);
-                        ptr::copy_nonoverlapping(old_buf.offset(i), new_buf.offset(idx), 1);
-
+                    let g = Group(old_ctrl.offset(group * GROUP_SIZE as isize));
+                    for slot in g.filled() {
+                        let idx = Index { group, slot };
+                        self.add(ptr::read(self.slot_at(idx)));
                         load -= 1;
                     }
                 }
@@ -277,28 +323,6 @@ where
                 Global.dealloc(NonNull::new_unchecked(old_ctrl).cast(), old_ctrl_layout);
             };
         }
-    }
-}
-
-impl<T> Drop for CustomSet<T> {
-    fn drop(&mut self) {
-        if self.cap != 0 && mem::size_of::<T>() != 0 {
-            unsafe {
-                let buf: NonNull<_> = self.buf.into();
-                let ctrl: NonNull<_> = self.ctrl.into();
-                let (buf_layout, ctrl_layout) = Self::layout(self.cap);
-
-                Global.dealloc(buf.cast(), buf_layout);
-                Global.dealloc(ctrl.cast(), ctrl_layout);
-            }
-        }
-    }
-}
-
-impl<T: fmt::Debug> fmt::Debug for CustomSet<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let c: Vec<_> = self.iter().collect();
-        write!(f, "{:?}", c)
     }
 }
 
@@ -312,87 +336,137 @@ where
     {
         let iter = iter.into_iter();
         let (lower, upper) = iter.size_hint();
-        let mut set = CustomSet::with_capacity(2 * upper.unwrap_or(lower));
-        for el in iter {
-            set.add(el);
+        let mut set = CustomSet::with_capacity(upper.unwrap_or(lower));
+        for elem in iter {
+            set.add(elem);
         }
         set
     }
 }
 
-impl<'s, T> FromIterator<&'s T> for CustomSet<T>
+impl<'set, T> FromIterator<&'set T> for CustomSet<T>
 where
-    T: Hash + Eq + Clone + 's,
+    T: Hash + Eq + Clone + 'set,
 {
     fn from_iter<I>(iter: I) -> Self
     where
-        I: IntoIterator<Item = &'s T>,
+        I: IntoIterator<Item = &'set T>,
     {
         let iter = iter.into_iter();
         let (lower, upper) = iter.size_hint();
         let mut set = CustomSet::with_capacity(2 * upper.unwrap_or(lower));
-        for el in iter {
-            set.add(el.clone());
+        for elem in iter {
+            set.add(elem.clone());
         }
         set
     }
 }
 
-struct CustomSetIter<'s, T> {
-    ctrl: *const bool,
-    buf: *const T,
+struct CustomSetIter<'set, T> {
     load: usize,
-    _marker: PhantomData<&'s T>,
+    idx: Index,
+    ctrl: *const Ctrl,
+    buf: *const T,
+    ctrl_match: u32,
+    _marker: PhantomData<&'set T>,
 }
 
-impl<'s, T> CustomSetIter<'s, T> {
-    fn new(set: &'s CustomSet<T>) -> Self {
+impl<'set, T> CustomSetIter<'set, T> {
+    fn new(set: &'set CustomSet<T>) -> Self {
+        let ctrl = set.ctrl();
         Self {
-            ctrl: set.ctrl(),
-            buf: set.buf(),
             load: set.load,
+            idx: Index::default(),
+            ctrl,
+            buf: set.slot(),
+            ctrl_match: if set.groups == 0 {
+                0
+            } else {
+                Group(ctrl).filled_mask()
+            },
             _marker: PhantomData,
         }
     }
-
-    fn offset(&mut self) {
-        unsafe {
-            self.ctrl = self.ctrl.offset(1);
-            self.buf = self.buf.offset(1);
-        }
-    }
 }
 
-impl<'s, T> Iterator for CustomSetIter<'s, T> {
-    type Item = &'s T;
+impl<'set, T> Iterator for CustomSetIter<'set, T> {
+    type Item = &'set T;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.load == 0 {
             return None;
         }
         unsafe {
-            if mem::size_of::<T>() == 0 {
-                let el = self.buf.as_ref().unwrap();
-                self.load -= 1;
-                Some(el)
-            } else {
-                while !ptr::read(self.ctrl) {
-                    self.offset();
-                }
-                let el = self.buf.as_ref().unwrap();
-                self.load -= 1;
-                self.offset();
-                Some(el)
+            if is_zst::<T>() {
+                self.load = 0;
+                return Some(self.buf.as_ref().unwrap());
             }
+            let idx = &mut self.idx;
+            while self.ctrl_match & 1 == 0 {
+                if self.ctrl_match == 0 {
+                    self.ctrl = self.ctrl.offset(GROUP_SIZE as isize);
+                    self.ctrl_match = Group(self.ctrl).filled_mask();
+                    idx.group += 1;
+                    idx.slot = 0;
+                }
+                self.ctrl_match >>= 1;
+                idx.slot += 1;
+            }
+            self.load -= 1;
+
+            let el = (self.buf + *idx).as_ref().unwrap();
+            idx.slot += 1;
+            Some(el)
         }
+    }
+}
+
+/// `Index` represents a position in the set,
+/// namely the element in group `Index.group`,
+/// in the slot `Index.slot`.
+#[derive(Clone, Copy, Default, Debug)]
+struct Index {
+    group: isize,
+    slot: isize,
+}
+
+impl Index {
+    /// Return the absolute offset from the start
+    /// of the array of this index.
+    fn offset(self) -> isize {
+        self.group * GROUP_SIZE as isize + self.slot
+    }
+}
+
+impl<T> std::ops::Add<Index> for *const T {
+    type Output = Self;
+    fn add(self, rhs: Index) -> Self::Output {
+        unsafe { self.offset(rhs.offset()) }
+    }
+}
+
+impl<T> std::ops::Add<Index> for *mut T {
+    type Output = Self;
+    fn add(self, rhs: Index) -> Self::Output {
+        unsafe { self.offset(rhs.offset()) }
     }
 }
 
 impl<T> PartialEq for CustomSet<T>
 where
-    T: Eq + Hash,
+    T: Hash + Eq,
 {
     fn eq(&self, other: &Self) -> bool {
-        self.is_subset(other) && other.is_subset(self)
+        self.load == other.load && { self.is_subset(other) && other.is_subset(self) }
+    }
+}
+
+impl<T> fmt::Debug for CustomSet<T>
+where
+    T: fmt::Debug + Hash + Eq + Clone,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let v: Vec<_> = self.iter().collect();
+        write!(f, "{:?}", v)
     }
 }
