@@ -243,7 +243,7 @@ where
                 let g = self.ctrl_group(group);
                 let h2_matches = g.matches(h2);
                 for h2_match in h2_matches {
-                    let h2_match = dbg!(h2_match);
+                    let h2_match = h2_match;
                     let idx = Index {
                         group,
                         slot: h2_match,
@@ -294,7 +294,6 @@ where
                 let (old_slot_layout, old_ctrl_layout) = Self::layout(old_groups);
                 let old_slot = self.slot();
                 let old_ctrl = self.ctrl();
-
                 let new_groups = old_groups * 2;
 
                 assert!(
@@ -318,7 +317,7 @@ where
                     let g = Group(old_ctrl.offset(group * GROUP_SIZE as isize));
                     for slot in g.filled() {
                         let idx = Index { group, slot };
-                        self.add(ptr::read(self.slot_at(idx)));
+                        self.add(ptr::read(old_slot + idx));
                         load -= 1;
                     }
                 }
