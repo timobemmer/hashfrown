@@ -1,3 +1,5 @@
+use std::fmt;
+
 /// A `Ctrl` represents a slot. It either flags
 /// the slot as unoccupied, or contains the h2
 /// hash of the element that occupies it.
@@ -33,6 +35,20 @@ impl From<u64> for Ctrl {
     fn from(hash: u64) -> Self {
         Self {
             h2: (hash & 0x7F) as u8,
+        }
+    }
+}
+
+impl fmt::Debug for Ctrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        unsafe {
+            return match self {
+                Ctrl { flag: Flag::Empty } => f.write_str("Empty"),
+                Ctrl {
+                    flag: Flag::Deleted,
+                } => f.write_str("Deleted"),
+                Ctrl { h2 } => f.write_str(&format!("Filled: {}", h2)),
+            };
         }
     }
 }

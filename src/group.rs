@@ -106,11 +106,11 @@ impl Group {
 
 /// `MaskIter` iterates over a bitmask from right
 /// to left, returning the index of each 1.
-pub struct MaskIter(u32, u8);
+pub struct MaskIter(u32);
 
 impl MaskIter {
     fn new(mask: u32) -> Self {
-        Self(mask, 0)
+        Self(mask)
     }
 }
 
@@ -121,14 +121,9 @@ impl Iterator for MaskIter {
         if self.0 == 0 {
             return None;
         }
-        while self.0 & 0x01 == 0x00 {
-            self.1 += 1;
-            self.0 >>= 1;
-        }
-        let i = self.1;
-        self.1 += 1;
-        self.0 >>= 1;
-        Some(i as isize)
+        let tzs = self.0.trailing_zeros() as isize;
+        self.0 &= !0 - 1 << tzs;
+        Some(tzs)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
