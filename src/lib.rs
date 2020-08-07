@@ -204,7 +204,7 @@ where
         unsafe {
             while group < self.groups {
                 let g = self.ctrl_group(group);
-                if let Some(slot) = g.matches(Ctrl::from(Flag::Empty)).next() {
+                if let Some(slot) = g.empty().next() {
                     let idx = Index { group, slot };
                     self.load += 1;
                     ptr::write(self.ctrl_at(idx), h2);

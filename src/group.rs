@@ -1,4 +1,4 @@
-use super::Ctrl;
+use super::ctrl::{self, Ctrl};
 #[cfg(target_arch = "x86")]
 use std::arch::x86::*;
 #[cfg(target_arch = "x86_64")]
@@ -12,7 +12,7 @@ pub const SIZE: usize = 16;
 pub struct Group(pub *const Ctrl);
 
 impl Group {
-    pub fn matches(&self, ctrl: Ctrl) -> impl Iterator<Item = isize> {
+    pub fn matches(&self, ctrl: Ctrl) -> MaskIter {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             if is_x86_feature_detected!("sse2") {
@@ -22,11 +22,21 @@ impl Group {
         todo!("Implement non-x86/non-SSE fallback");
     }
 
-    pub fn filled(&self) -> impl Iterator<Item = isize> {
+    pub fn filled(&self) -> MaskIter {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
             if is_x86_feature_detected!("sse2") {
                 return unsafe { self.filled_sse2() };
+            }
+        }
+        todo!("Implement non-x86/non-SSE fallback");
+    }
+
+    pub fn empty(&self) -> MaskIter {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            if is_x86_feature_detected!("sse2") {
+                return unsafe { self.empty_sse2() };
             }
         }
         todo!("Implement non-x86/non-SSE fallback");
@@ -53,21 +63,21 @@ impl Group {
     }
 
     #[target_feature(enable = "sse2")]
-    unsafe fn matches_sse2(&self, ctrl: Ctrl) -> impl Iterator<Item = isize> {
-        let result = self.matches_mask_sse2(ctrl);
-        (0..SIZE)
-            .map(move |s| (s, result >> s))
-            .filter(|(_, m)| m & 1 == 1)
-            .map(|(s, _)| s as isize)
+    unsafe fn matches_sse2(&self, ctrl: Ctrl) -> MaskIter {
+        let mask = self.matches_mask_sse2(ctrl);
+        MaskIter::new(mask)
     }
 
     #[target_feature(enable = "sse2")]
-    unsafe fn filled_sse2(&self) -> impl Iterator<Item = isize> {
-        let result = self.filled_mask_sse2();
-        (0..SIZE)
-            .map(move |s| (s, result >> s))
-            .filter(|(_, m)| m & 1 == 1)
-            .map(|(s, _)| s as isize)
+    unsafe fn filled_sse2(&self) -> MaskIter {
+        let mask = self.filled_mask_sse2();
+        MaskIter::new(mask)
+    }
+
+    #[target_feature(enable = "sse2")]
+    unsafe fn empty_sse2(&self) -> MaskIter {
+        let mask = self.empty_mask_sse2();
+        MaskIter::new(mask)
     }
 
     #[target_feature(enable = "sse2")]
@@ -82,9 +92,47 @@ impl Group {
     }
 
     #[target_feature(enable = "sse2")]
+    unsafe fn empty_mask_sse2(&self) -> u32 {
+        self.mask(ctrl::Flag::Empty as i8, _mm_cmpeq_epi8)
+    }
+
+    #[target_feature(enable = "sse2")]
     unsafe fn mask(&self, mask: i8, f: unsafe fn(__m128i, __m128i) -> __m128i) -> u32 {
         let mask = _mm_set1_epi8(mask);
         let group = _mm_load_si128(self.0 as *const _);
         _mm_movemask_epi8(f(group, mask)) as u32
+    }
+}
+
+/// `MaskIter` iterates over a bitmask from right
+/// to left, returning the index of each 1.
+pub struct MaskIter(u32, u8);
+
+impl MaskIter {
+    fn new(mask: u32) -> Self {
+        Self(mask, 0)
+    }
+}
+
+impl Iterator for MaskIter {
+    type Item = isize;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.0 == 0 {
+            return None;
+        }
+        while self.0 & 0x01 == 0x00 {
+            self.1 += 1;
+            self.0 >>= 1;
+        }
+        let i = self.1;
+        self.1 += 1;
+        self.0 >>= 1;
+        Some(i as isize)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let ones = self.0.count_ones() as usize;
+        (ones, Some(ones))
     }
 }
