@@ -136,7 +136,7 @@ impl<T> CustomSet<T> {
         self.groups * GROUP_SIZE as isize
     }
 
-    /// Calculates the minimum number of groups need to hold
+    /// Calculates the minimum number of groups needed to hold
     /// `cap` elements.
     fn groups_from_cap(cap: usize) -> isize {
         (cap / GROUP_SIZE) as isize + (cap % GROUP_SIZE != 0) as isize
@@ -184,7 +184,11 @@ where
 {
     /// Returns true, if the set contains `element`.
     pub fn contains(&self, element: &T) -> bool {
-        (is_zst::<T>() && self.load > 0) || (!self.is_empty() && self.find(element))
+        if is_zst::<T>() {
+            self.load > 0
+        } else {
+            !self.is_empty() && self.find(element)
+        }
     }
 
     /// Adds an element to the set.
