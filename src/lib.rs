@@ -284,7 +284,7 @@ where
                         group,
                         slot: h2_match,
                     };
-                    if self.slot_at(idx).as_ref().unwrap() == element {
+                    if &*self.slot_at(idx) == element {
                         return true;
                     }
                 }
@@ -448,7 +448,7 @@ impl<'set, T> Iterator for CustomSetIter<'set, T> {
         unsafe {
             if is_zst::<T>() {
                 self.load = 0;
-                return Some(self.slot.as_ref().unwrap());
+                return Some(&*self.slot);
             }
             let idx = &mut self.idx;
             while self.ctrl_match & 1 == 0 {
@@ -463,9 +463,9 @@ impl<'set, T> Iterator for CustomSetIter<'set, T> {
             }
             self.load -= 1;
 
-            let el = (self.slot + *idx).as_ref().unwrap();
+            let slot = self.slot + *idx;
             idx.slot += 1;
-            Some(el)
+            Some(&*slot)
         }
     }
 }
