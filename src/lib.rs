@@ -97,7 +97,7 @@ impl<T> CustomSet<T> {
 
     /// Return the `group`th group of ctrls.
     fn ctrl_group(&self, group: usize) -> Group {
-        unsafe { Group(self.ctrl().add(group * GROUP_SIZE)) }
+        Group(self.ctrl() + Index::group(group))
     }
 
     /// Returns the the layout of the slot array and the ctrl array.
@@ -161,7 +161,7 @@ impl<T> CustomSet<T> {
         let vector = _mm_set1_epi8(Flag::Empty as i8);
 
         for group in 0..groups {
-            _mm_store_si128(ptr.add(group * GROUP_SIZE) as *mut _, vector);
+            _mm_store_si128(ptr + Index::group(group) as *mut _, vector);
         }
     }
 
@@ -350,7 +350,7 @@ where
                         break;
                     }
 
-                    let g = Group(old_ctrl.add(group * GROUP_SIZE));
+                    let g = Group(old_ctrl + Index::group(group));
                     for slot in g.filled() {
                         let idx = Index { group, slot };
                         self.add(ptr::read(old_slot + idx));
@@ -484,6 +484,12 @@ impl Index {
     /// of the array of this index.
     fn offset(self) -> usize {
         self.group * GROUP_SIZE + self.slot
+    }
+
+    /// Return the index of the first slot in
+    /// group `group`.
+    fn group(group: usize) -> Self {
+        Self { group, slot: 0 }
     }
 }
 
