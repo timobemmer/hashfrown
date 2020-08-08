@@ -35,7 +35,7 @@ pub struct CustomSet<T> {
     ctrl: Unique<Ctrl>,
     load_factor: f64,
     load: usize,
-    groups: isize,
+    groups: usize,
     hash_builder: RandomState,
 }
 
@@ -96,21 +96,21 @@ impl<T> CustomSet<T> {
     }
 
     /// Return the `group`th group of ctrls.
-    fn ctrl_group(&self, group: isize) -> Group {
-        unsafe { Group(self.ctrl().offset(group * GROUP_SIZE as isize)) }
+    fn ctrl_group(&self, group: usize) -> Group {
+        unsafe { Group(self.ctrl().add(group * GROUP_SIZE)) }
     }
 
     /// Returns the the layout of the slot array and the ctrl array.
-    fn layout(groups: isize) -> (Layout, Layout) {
+    fn layout(groups: usize) -> (Layout, Layout) {
         (
-            Layout::array::<T>(groups as usize * GROUP_SIZE).unwrap(),
-            Layout::array::<Ctrl>(groups as usize * GROUP_SIZE).unwrap(),
+            Layout::array::<T>(groups * GROUP_SIZE).unwrap(),
+            Layout::array::<Ctrl>(groups * GROUP_SIZE).unwrap(),
         )
     }
 
     /// Allocates enough memory to hold `groups` groups of elements
     /// and control bytes. Sets all control bytes to [Flag::Empty](ctrl::Flag::Empty).
-    fn allocate_groups(groups: isize) -> (*mut T, *mut Ctrl) {
+    fn allocate_groups(groups: usize) -> (*mut T, *mut Ctrl) {
         let (slot_layout, ctrl_layout) = Self::layout(groups);
 
         let slot = match Global.alloc(slot_layout, AllocInit::Uninitialized) {
@@ -123,7 +123,7 @@ impl<T> CustomSet<T> {
         } as *mut Ctrl;
 
         unsafe {
-            ptr::write_bytes(ctrl, Flag::Empty as u8, groups as usize * GROUP_SIZE);
+            ptr::write_bytes(ctrl, Flag::Empty as u8, groups * GROUP_SIZE);
         }
 
         (slot as *mut _, ctrl)
@@ -131,15 +131,15 @@ impl<T> CustomSet<T> {
 
     /// Returns the set's capacity for elements. Only used
     /// to calculate when to grow the buffer.
-    fn cap(&self) -> isize {
+    fn cap(&self) -> usize {
         assert!(!is_zst::<T>());
-        self.groups * GROUP_SIZE as isize
+        self.groups * GROUP_SIZE
     }
 
     /// Calculates the minimum number of groups needed to hold
     /// `cap` elements.
-    fn groups_from_cap(cap: usize) -> isize {
-        (cap / GROUP_SIZE) as isize + (cap % GROUP_SIZE != 0) as isize
+    fn groups_from_cap(cap: usize) -> usize {
+        (cap / GROUP_SIZE) + (cap % GROUP_SIZE != 0) as usize
     }
 
     fn iter(&self) -> CustomSetIter<'_, T> {
@@ -255,17 +255,17 @@ where
                 if g.matches_mask(Flag::Empty.into()) > 0 {
                     return false;
                 }
-                group = (group + 1) % self.groups as isize
+                group = (group + 1) % self.groups
             }
         }
         false
     }
 
     /// Returns the index of `elements`' group.
-    fn group_of(&self, element: &T) -> (isize, Ctrl) {
+    fn group_of(&self, element: &T) -> (usize, Ctrl) {
         let hash = self.hash(element);
         let (h1, h2) = (h1(hash), h2(hash));
-        ((h1 % self.groups as u64) as isize, h2)
+        ((h1 % self.groups as u64) as usize, h2)
     }
 
     /// Returns the hash of `element`.
@@ -297,7 +297,7 @@ where
                 let new_groups = old_groups * 2;
 
                 assert!(
-                    new_groups * (GROUP_SIZE as isize) < isize::MAX,
+                    new_groups * (GROUP_SIZE) < isize::MAX as usize,
                     "capacity overflow"
                 );
 
@@ -309,12 +309,12 @@ where
                 let mut load = self.load;
                 self.load = 0;
 
-                for group in 0..old_groups as isize {
+                for group in 0..old_groups {
                     if load == 0 {
                         break;
                     }
 
-                    let g = Group(old_ctrl.offset(group * GROUP_SIZE as isize));
+                    let g = Group(old_ctrl.add(group * GROUP_SIZE));
                     for slot in g.filled() {
                         let idx = Index { group, slot };
                         self.add(ptr::read(old_slot + idx));
@@ -417,7 +417,7 @@ impl<'set, T> Iterator for CustomSetIter<'set, T> {
             let idx = &mut self.idx;
             while self.ctrl_match & 1 == 0 {
                 if self.ctrl_match == 0 {
-                    self.ctrl = self.ctrl.offset(GROUP_SIZE as isize);
+                    self.ctrl = self.ctrl.add(GROUP_SIZE);
                     self.ctrl_match = Group(self.ctrl).filled_mask();
                     idx.group += 1;
                     idx.slot = 0;
@@ -439,29 +439,29 @@ impl<'set, T> Iterator for CustomSetIter<'set, T> {
 /// in the slot `Index.slot`.
 #[derive(Clone, Copy, Default, Debug)]
 struct Index {
-    group: isize,
-    slot: isize,
+    group: usize,
+    slot: usize,
 }
 
 impl Index {
     /// Return the absolute offset from the start
     /// of the array of this index.
-    fn offset(self) -> isize {
-        self.group * GROUP_SIZE as isize + self.slot
+    fn offset(self) -> usize {
+        self.group * GROUP_SIZE + self.slot
     }
 }
 
 impl<T> std::ops::Add<Index> for *const T {
     type Output = Self;
     fn add(self, rhs: Index) -> Self::Output {
-        unsafe { self.offset(rhs.offset()) }
+        unsafe { self.add(rhs.offset()) }
     }
 }
 
 impl<T> std::ops::Add<Index> for *mut T {
     type Output = Self;
     fn add(self, rhs: Index) -> Self::Output {
-        unsafe { self.offset(rhs.offset()) }
+        unsafe { self.add(rhs.offset()) }
     }
 }
 
