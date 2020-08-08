@@ -106,7 +106,8 @@ impl Group {
 
 /// `MaskIter` iterates over a bitmask from right
 /// to left, returning the index of each 1.
-pub struct MaskIter(u32);
+#[derive(Clone, Copy)]
+pub struct MaskIter(pub(super) u32);
 
 impl MaskIter {
     fn new(mask: u32) -> Self {

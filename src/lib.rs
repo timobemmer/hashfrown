@@ -413,10 +413,9 @@ where
 
 struct CustomSetIter<'set, T> {
     load: usize,
-    idx: Index,
     ctrl: *const Ctrl,
     slot: *const T,
-    ctrl_match: u32,
+    ctrl_match: group::MaskIter,
     _marker: PhantomData<&'set T>,
 }
 
@@ -425,13 +424,12 @@ impl<'set, T> CustomSetIter<'set, T> {
         let ctrl = set.ctrl();
         Self {
             load: set.load,
-            idx: Index::default(),
             ctrl,
             slot: set.slot(),
             ctrl_match: if set.groups == 0 {
-                0
+                group::MaskIter(0)
             } else {
-                Group(ctrl).filled_mask()
+                group::MaskIter(Group(ctrl).filled_mask())
             },
             _marker: PhantomData,
         }
@@ -446,26 +444,15 @@ impl<'set, T> Iterator for CustomSetIter<'set, T> {
             return None;
         }
         unsafe {
-            if is_zst::<T>() {
-                self.load = 0;
-                return Some(&*self.slot);
+            if let Some(slot) = self.ctrl_match.next() {
+                self.load -= 1;
+                Some(&*(self.slot + Index::slot(slot)))
+            } else {
+                self.ctrl = self.ctrl + Index::group(1);
+                self.slot = self.slot + Index::group(1);
+                self.ctrl_match = group::MaskIter(Group(self.ctrl).filled_mask());
+                self.next()
             }
-            let idx = &mut self.idx;
-            while self.ctrl_match & 1 == 0 {
-                if self.ctrl_match == 0 {
-                    self.ctrl = self.ctrl.add(GROUP_SIZE);
-                    self.ctrl_match = Group(self.ctrl).filled_mask();
-                    idx.group += 1;
-                    idx.slot = 0;
-                }
-                self.ctrl_match >>= 1;
-                idx.slot += 1;
-            }
-            self.load -= 1;
-
-            let slot = self.slot + *idx;
-            idx.slot += 1;
-            Some(&*slot)
         }
     }
 }
@@ -490,6 +477,13 @@ impl Index {
     /// group `group`.
     fn group(group: usize) -> Self {
         Self { group, slot: 0 }
+    }
+
+    /// Return the index of the slot `slot` in
+    /// the first group.
+    fn slot(slot: usize) -> Self {
+        debug_assert!(slot < GROUP_SIZE);
+        Self { group: 0, slot }
     }
 }
 
