@@ -115,14 +115,14 @@ impl MaskIter {
 }
 
 impl Iterator for MaskIter {
-    type Item = isize;
+    type Item = usize;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.0 == 0 {
             return None;
         }
-        let tzs = self.0.trailing_zeros() as isize;
-        self.0 &= !0 - 1 << tzs;
+        let tzs = self.0.trailing_zeros() as usize;
+        self.0 ^= 1 << tzs;
         Some(tzs)
     }
 
