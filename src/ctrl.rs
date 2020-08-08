@@ -4,6 +4,7 @@ use std::fmt;
 /// the slot as unoccupied, or contains the h2
 /// hash of the element that occupies it.
 #[derive(Clone, Copy)]
+#[repr(C, align(1))]
 pub union Ctrl {
     pub flag: Flag,
     pub h2: u8,
@@ -54,6 +55,7 @@ impl fmt::Debug for Ctrl {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Flag {
     Empty = 0x80,
     Deleted = 0xFF,
