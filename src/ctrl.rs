@@ -12,11 +12,7 @@ pub union Ctrl {
 
 impl From<Ctrl> for u8 {
     fn from(c: Ctrl) -> u8 {
-        unsafe {
-            match c {
-                Ctrl { h2 } => h2,
-            }
-        }
+        unsafe { c.h2 }
     }
 }
 
@@ -43,18 +39,18 @@ impl From<u64> for Ctrl {
 impl fmt::Debug for Ctrl {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         unsafe {
-            return match self {
+            match self {
                 Ctrl { flag: Flag::Empty } => f.write_str("Empty"),
                 Ctrl {
                     flag: Flag::Deleted,
                 } => f.write_str("Deleted"),
                 Ctrl { h2 } => f.write_str(&format!("Filled: {}", h2)),
-            };
+            }
         }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 #[repr(u8)]
 pub enum Flag {
     Empty = 0x80,
