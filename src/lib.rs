@@ -116,17 +116,53 @@ impl<T> CustomSet<T> {
         let slot = match Global.alloc(slot_layout, AllocInit::Uninitialized) {
             Ok(block) => block.ptr.as_ptr(),
             Err(_) => handle_alloc_error(slot_layout),
-        };
-        let ctrl = match Global.alloc(ctrl_layout, AllocInit::Zeroed) {
+        } as *mut T;
+        let ctrl = match Global.alloc(ctrl_layout, AllocInit::Uninitialized) {
             Ok(block) => block.ptr.as_ptr(),
             Err(_) => handle_alloc_error(ctrl_layout),
         } as *mut Ctrl;
 
+        // SAFETY: This is safe because we got `ctrl` from
+        // the global allocator, and we make sure that the
+        // `Ctrl` type has a byte layout.
         unsafe {
-            ptr::write_bytes(ctrl, Flag::Empty as u8, groups * GROUP_SIZE);
+            Self::init_ctrl_array(ctrl, groups);
         }
 
-        (slot as *mut _, ctrl)
+        (slot, ctrl)
+    }
+
+    /// Initializes an array of length `groups * GROUP_SIZE`
+    /// of `Ctrl`s starting at `ptr` with [`Flag::Empty`](ctrl::Flag::Empty).
+    ///
+    /// # Safety
+    ///
+    /// See [`ptr::write_bytes`](std::ptr::write_bytes) for safety.
+    unsafe fn init_ctrl_array(ptr: *mut Ctrl, groups: usize) {
+        #[cfg(any(arch = "x86", arch = "x86_64"))]
+        {
+            if std::is_x86_feature_detected!("sse2") {
+                // SAFETY: This is safe because we checked that SSE2 is
+                // available.
+                return unsafe { Self::init_ctrl_array_sse2(ptr, groups) };
+            }
+        }
+        ptr::write_bytes(ptr, Flag::Empty as u8, groups * GROUP_SIZE);
+    }
+
+    #[cfg(any(arch = "x86", arch = "x86_64"))]
+    #[target_feature(enable = "sse2")]
+    unsafe fn init_ctrl_array_sse2(ptr: *mut Ctrl, groups: usize) {
+        #[cfg(arch = "x86")]
+        use std::arch::x86::{_mm_set1_epi8, _mm_store_si128};
+        #[cfg(arch = "x86_64")]
+        use std::arch::x86_64::{_mm_set1_epi8, _mm_store_si128};
+
+        let vector = _mm_set1_epi8(Flag::Empty as i8);
+
+        for group in 0..groups {
+            _mm_store_si128(ptr.add(group * GROUP_SIZE) as *mut _, vector);
+        }
     }
 
     /// Returns the set's capacity for elements. Only used
