@@ -296,3 +296,46 @@ fn union_of_non_empty_sets_contains_all_unique_elements() {
     let set2 = CustomSet::new(&[2, 3]);
     assert_eq!(set1.union(&set2), CustomSet::new(&[3, 2, 1]));
 }
+
+#[test]
+fn many_insertions() {
+    let mut set = CustomSet::new(&[]);
+    for i in 0..1024 {
+        set.add(i);
+    }
+
+    for ref i in 0..1024 {
+        assert!(set.contains(i), "Expected {} to be in the set.", i);
+    }
+}
+
+#[test]
+fn insert_complex_type() {
+    use std::iter;
+    #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
+    struct S {
+        a: u32,
+        b: bool,
+    }
+    let mut set = CustomSet::new(&[]);
+    let constructor = (0..256)
+        .zip(iter::repeat(true))
+        .chain((0..256).zip(iter::repeat(false)));
+
+    for (a, b) in constructor.clone() {
+        set.add(S { a, b });
+    }
+
+    for (a, b) in constructor {
+        let s = S { a, b };
+        assert!(set.contains(&s), "Expected {:?} to be in the set.", s);
+    }
+}
+
+#[test]
+fn zst_iter() {
+    let set1 = CustomSet::new(&[()]);
+    let set2 = CustomSet::new(&[()]);
+    assert!(set1.contains(&()));
+    assert_eq!(set1, set2);
+}

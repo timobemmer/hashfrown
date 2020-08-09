@@ -10,6 +10,7 @@ use std::{
     iter::FromIterator,
     marker::PhantomData,
     mem,
+    ops::{Add, Index},
     ptr::{self, NonNull, Unique},
 };
 
@@ -86,18 +87,18 @@ impl<T> CustomSet<T> {
     }
 
     /// Return a raw pointer to the slot at `idx`.
-    fn slot_at(&self, idx: Index) -> *mut T {
+    fn slot_at(&self, idx: Idx) -> *mut T {
         self.slot() + idx
     }
 
     /// Return a raw pointer to the ctrl at `idx`.
-    fn ctrl_at(&self, idx: Index) -> *mut Ctrl {
+    fn ctrl_at(&self, idx: Idx) -> *mut Ctrl {
         self.ctrl() + idx
     }
 
     /// Return the `group`th group of ctrls.
     fn ctrl_group(&self, group: usize) -> Group {
-        Group(self.ctrl() + Index::group(group))
+        Group(self.ctrl() + Idx::group(group))
     }
 
     /// Returns the the layout of the slot array and the ctrl array.
@@ -245,7 +246,7 @@ where
             while group < self.groups {
                 let g = self.ctrl_group(group);
                 if let Some(slot) = g.empty().next() {
-                    let idx = Index { group, slot };
+                    let idx = Idx { group, slot };
                     self.load += 1;
                     ptr::write(self.ctrl_at(idx), h2);
                     ptr::write(self.slot_at(idx), element);
@@ -280,7 +281,7 @@ where
                 let h2_matches = g.matches(h2);
                 for h2_match in h2_matches {
                     let h2_match = h2_match;
-                    let idx = Index {
+                    let idx = Idx {
                         group,
                         slot: h2_match,
                     };
@@ -350,9 +351,9 @@ where
                         break;
                     }
 
-                    let g = Group(old_ctrl + Index::group(group));
+                    let g = Group(old_ctrl + Idx::group(group));
                     for slot in g.filled() {
-                        let idx = Index { group, slot };
+                        let idx = Idx { group, slot };
                         self.add(ptr::read(old_slot + idx));
                         load -= 1;
                     }
@@ -385,7 +386,7 @@ where
     {
         let iter = iter.into_iter();
         let (lower, upper) = iter.size_hint();
-        let mut set = CustomSet::with_capacity(upper.unwrap_or(lower));
+        let mut set = CustomSet::with_capacity(2 * upper.unwrap_or(lower));
         for elem in iter {
             set.add(elem);
         }
@@ -446,10 +447,10 @@ impl<'set, T> Iterator for CustomSetIter<'set, T> {
         unsafe {
             if let Some(slot) = self.ctrl_match.next() {
                 self.load -= 1;
-                Some(&*(self.slot + Index::slot(slot)))
+                Some(&*(self.slot + Idx::slot(slot)))
             } else {
-                self.ctrl = self.ctrl + Index::group(1);
-                self.slot = self.slot + Index::group(1);
+                self.ctrl = self.ctrl + Idx::group(1);
+                self.slot = self.slot + Idx::group(1);
                 self.ctrl_match = group::MaskIter(Group(self.ctrl).filled_mask());
                 self.next()
             }
@@ -461,12 +462,12 @@ impl<'set, T> Iterator for CustomSetIter<'set, T> {
 /// namely the element in group `Index.group`,
 /// in the slot `Index.slot`.
 #[derive(Clone, Copy, Default, Debug)]
-struct Index {
+struct Idx {
     group: usize,
     slot: usize,
 }
 
-impl Index {
+impl Idx {
     /// Return the absolute offset from the start
     /// of the array of this index.
     fn offset(self) -> usize {
@@ -476,27 +477,27 @@ impl Index {
     /// Return the index of the first slot in
     /// group `group`.
     fn group(group: usize) -> Self {
-        Self { group, slot: 0 }
+        Idx { group, slot: 0 }
     }
 
     /// Return the index of the slot `slot` in
     /// the first group.
     fn slot(slot: usize) -> Self {
         debug_assert!(slot < GROUP_SIZE);
-        Self { group: 0, slot }
+        Idx { group: 0, slot }
     }
 }
 
-impl<T> std::ops::Add<Index> for *const T {
+impl<T> Add<Idx> for *const T {
     type Output = Self;
-    fn add(self, rhs: Index) -> Self::Output {
+    fn add(self, rhs: Idx) -> Self::Output {
         unsafe { self.add(rhs.offset()) }
     }
 }
 
-impl<T> std::ops::Add<Index> for *mut T {
+impl<T> Add<Idx> for *mut T {
     type Output = Self;
-    fn add(self, rhs: Index) -> Self::Output {
+    fn add(self, rhs: Idx) -> Self::Output {
         unsafe { self.add(rhs.offset()) }
     }
 }
