@@ -1,4 +1,4 @@
 [package]
-edition = "2018"
-name = "custom-set"
+edition = "2021"
+name = "hashfrown"
 version = "1.0.1"

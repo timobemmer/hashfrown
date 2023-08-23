@@ -1,4 +1,4 @@
-use custom_set::*;
+use hashfrown::*;
 
 #[test]
 fn sets_with_no_elements_are_empty() {

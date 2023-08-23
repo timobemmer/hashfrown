@@ -1,7 +1,7 @@
 use ctrl::{Ctrl, Flag};
 use group::{Group, SIZE as GROUP_SIZE};
 use std::{
-    alloc::{handle_alloc_error, AllocInit, AllocRef, Global, Layout},
+    alloc::{handle_alloc_error, Allocator, Global, Layout},
     collections::hash_map::RandomState,
     fmt,
     hash::{BuildHasher, Hash, Hasher},
@@ -111,12 +111,12 @@ impl<K, V> HashMap<K, V> {
     fn allocate_groups(groups: usize) -> (*mut (K, V), *mut Ctrl) {
         let (slot_layout, ctrl_layout) = Self::layout(groups);
 
-        let slot = match Global.alloc(slot_layout, AllocInit::Uninitialized) {
-            Ok(block) => block.ptr.as_ptr(),
+        let slot = match Global.allocate(slot_layout) {
+            Ok(block) => block.as_ptr(),
             Err(_) => handle_alloc_error(slot_layout),
         } as *mut (K, V);
-        let ctrl = match Global.alloc(ctrl_layout, AllocInit::Uninitialized) {
-            Ok(block) => block.ptr.as_ptr(),
+        let ctrl = match Global.allocate(ctrl_layout) {
+            Ok(block) => block.as_ptr(),
             Err(_) => handle_alloc_error(ctrl_layout),
         } as *mut Ctrl;
 
@@ -142,13 +142,13 @@ impl<K, V> HashMap<K, V> {
     unsafe fn allocate_zst() -> (*mut (K, V), *mut Ctrl) {
         let (slot_layout, ctrl_layout) = (Layout::new::<(K, V)>(), Layout::new::<Ctrl>());
 
-        let slot = match Global.alloc(slot_layout, AllocInit::Uninitialized) {
-            Ok(block) => block.ptr.as_ptr(),
+        let slot = match Global.allocate(slot_layout) {
+            Ok(block) => block.as_ptr(),
             Err(_) => handle_alloc_error(slot_layout),
         } as *mut (K, V);
 
-        let ctrl = match Global.alloc(ctrl_layout, AllocInit::Uninitialized) {
-            Ok(block) => block.ptr.as_ptr(),
+        let ctrl = match Global.allocate(ctrl_layout) {
+            Ok(block) => block.as_ptr(),
             Err(_) => handle_alloc_error(ctrl_layout),
         } as *mut Ctrl;
 
@@ -394,8 +394,8 @@ where
                     }
                 }
 
-                Global.dealloc(NonNull::new_unchecked(old_slot).cast(), old_slot_layout);
-                Global.dealloc(NonNull::new_unchecked(old_ctrl).cast(), old_ctrl_layout);
+                Global.deallocate(NonNull::new_unchecked(old_slot).cast(), old_slot_layout);
+                Global.deallocate(NonNull::new_unchecked(old_ctrl).cast(), old_ctrl_layout);
             };
         }
     }
@@ -405,8 +405,8 @@ impl<K, V> Drop for HashMap<K, V> {
     fn drop(&mut self) {
         let (slot_layout, ctrl_layout) = Self::layout(self.groups);
         unsafe {
-            Global.dealloc(NonNull::new_unchecked(self.slot()).cast(), slot_layout);
-            Global.dealloc(NonNull::new_unchecked(self.ctrl()).cast(), ctrl_layout);
+            Global.deallocate(NonNull::new_unchecked(self.slot()).cast(), slot_layout);
+            Global.deallocate(NonNull::new_unchecked(self.ctrl()).cast(), ctrl_layout);
         }
     }
 }
